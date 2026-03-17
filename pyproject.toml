@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ewe-gate"
+version = "0.1.0"
+authors = [
+    { name = "Maheep Purohit", email = "purohitmaheep@gmail.com" }
+]
+description = "Epistemic Weight Engine — Pre-update gating for noise-robust AI learning"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+]
+keywords = [
+    "machine learning",
+    "deep learning", 
+    "noisy labels",
+    "robust learning",
+    "pytorch"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/maheeppurohit/epistemic-weight-engine"
+Paper = "https://doi.org/10.5281/zenodo.18940011"
