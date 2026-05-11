@@ -1,0 +1,41 @@
+{
+  "experiment": "Approval Bias LM",
+  "model": "DistilBERT",
+  "dataset": "IMDb",
+  "bias_rate": 0.3,
+  "timestamp": "2026-05-11T09:56:22.242570",
+  "results": {
+    "standard_clean": {
+      "mean": 84.96666666666665,
+      "std": 0.3399346342395173,
+      "per_seed": [
+        85.1,
+        84.5,
+        85.3
+      ]
+    },
+    "standard_biased": {
+      "mean": 80.43333333333332,
+      "std": 0.5312459150169728,
+      "per_seed": [
+        79.8,
+        80.4,
+        81.1
+      ]
+    },
+    "ewe_biased": {
+      "mean": 76.96666666666667,
+      "std": 3.8724095283886952,
+      "per_seed": [
+        78.3,
+        71.7,
+        80.9
+      ]
+    }
+  },
+  "key_findings": {
+    "bias_damage": 4.533333333333331,
+    "ewe_recovery": -3.4666666666666544,
+    "recovery_pct": -76.47058823529387
+  }
+}
