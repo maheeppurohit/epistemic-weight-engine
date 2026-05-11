@@ -1,90 +1,69 @@
 """
-Loss functions compatible with EWE.
-Can be used standalone or combined with EWEGate.
+EWE Loss Functions
+==================
+Noise-robust loss functions for use with EWEGate.
 """
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 
-class GCELoss(nn.Module):
+def gce_loss(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    q: float = 0.7,
+    reduction: str = "mean",
+) -> torch.Tensor:
     """
-    Generalised Cross-Entropy Loss.
-    Zhang & Sabuncu, NeurIPS 2018.
+    Generalised Cross-Entropy loss (Zhang & Sabuncu, NeurIPS 2018).
 
-    Noise-robust loss that interpolates between
-    cross-entropy (q→0) and MAE (q=1).
+    Interpolates between cross-entropy (q→0) and MAE (q=1).
+    Naturally robust to label noise.
 
     Args:
-        q (float): Robustness parameter. Default 0.7.
-                   Higher q = more robust to label noise.
-        num_classes (int): Number of classes. Default 10.
+        outputs:   Model logits, shape (N, C).
+        targets:   Target class indices, shape (N,).
+        q:         Interpolation parameter in (0, 1]. Default 0.7.
+        reduction: 'mean', 'sum', or 'none'. Default 'mean'.
 
-    Example:
-        >>> criterion = GCELoss(q=0.7)
-        >>> loss = criterion(logits, labels)
+    Returns:
+        Scalar loss (reduction='mean'/'sum') or per-sample loss (='none').
     """
+    probs = F.softmax(outputs, dim=1)
+    probs_y = probs[range(len(targets)), targets].clamp(min=1e-7)
+    loss = (1.0 - probs_y ** q) / q
+    stab = 1e-4 * F.cross_entropy(outputs, targets)
 
-    def __init__(self, q: float = 0.7, num_classes: int = 10):
-        super().__init__()
-        self.q = q
-        self.num_classes = num_classes
-
-    def forward(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-        reduction: str = "mean"
-    ) -> torch.Tensor:
-        probs = F.softmax(logits, dim=1)
-        probs_y = probs[torch.arange(len(labels)), labels].clamp(min=1e-7)
-        loss = (1 - probs_y ** self.q) / self.q
-
-        # Stabilisation term prevents gradient collapse
-        stab = 1e-4 * F.cross_entropy(logits, labels)
-
-        if reduction == "none":
-            return loss + stab
-        return loss.mean() + stab
-
-    def __repr__(self) -> str:
-        return f"GCELoss(q={self.q})"
+    if reduction == "none":
+        return loss + stab
+    elif reduction == "sum":
+        return loss.sum() + stab
+    return loss.mean() + stab
 
 
-class LabelSmoothingLoss(nn.Module):
+def label_smoothing_loss(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int,
+    smoothing: float = 0.1,
+) -> torch.Tensor:
     """
-    Label Smoothing Loss.
-    Szegedy et al., CVPR 2016.
-
-    Reduces overconfidence by softening hard targets.
+    Label Smoothing cross-entropy loss (Szegedy et al., CVPR 2016).
 
     Args:
-        smoothing (float): Smoothing factor. Default 0.1.
-        num_classes (int): Number of classes. Default 10.
+        outputs:     Model logits, shape (N, C).
+        targets:     Target class indices, shape (N,).
+        num_classes: Number of output classes C.
+        smoothing:   Smoothing coefficient. Default 0.1.
 
-    Example:
-        >>> criterion = LabelSmoothingLoss(smoothing=0.1)
-        >>> loss = criterion(logits, labels)
+    Returns:
+        Scalar mean loss.
     """
-
-    def __init__(self, smoothing: float = 0.1, num_classes: int = 10):
-        super().__init__()
-        self.smoothing = smoothing
-        self.num_classes = num_classes
-
-    def forward(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-    ) -> torch.Tensor:
-        conf = 1.0 - self.smoothing
-        smooth_val = self.smoothing / (self.num_classes - 1)
-        one_hot = torch.zeros_like(logits).scatter_(
-            1, labels.unsqueeze(1), 1
-        )
-        smooth_oh = one_hot * conf + (1 - one_hot) * smooth_val
-        return -(smooth_oh * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
-
-    def __repr__(self) -> str:
-        return f"LabelSmoothingLoss(smoothing={self.smoothing})"
+    confidence = 1.0 - smoothing
+    smooth_val = smoothing / (num_classes - 1)
+    one_hot = torch.zeros_like(outputs).scatter_(
+        1, targets.unsqueeze(1), 1
+    )
+    smooth_one_hot = one_hot * confidence + (1 - one_hot) * smooth_val
+    log_prob = F.log_softmax(outputs, dim=1)
+    return -(smooth_one_hot * log_prob).sum(dim=1).mean()
