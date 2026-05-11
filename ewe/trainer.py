@@ -1,140 +1,126 @@
 """
-EWETrainer — High-level trainer that wraps any PyTorch model with EWE.
+EWE Trainer
+===========
+High-level training wrapper with EWEGate integration.
 """
 
+from typing import Optional, Callable
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from typing import Optional, Callable
-from .gate import EWEGate
+import torch.nn.functional as F
+from .gate import EWEGate, adaptive_k
+from .losses import gce_loss
 
 
 class EWETrainer:
     """
-    High-level trainer that wraps any PyTorch model with EWE gating.
+    Training wrapper that integrates EWEGate with any PyTorch model.
 
-    Handles the training loop automatically. Just pass your model,
-    optimizer, and dataloader.
+    Supports:
+    - Standard EWE (cross-entropy loss + EWE gate)
+    - EWE+GCE (GCE loss + EWE gate)
+    - Warmup period before gate activation
 
     Args:
-        model (nn.Module): Your PyTorch model.
-        optimizer: PyTorch optimizer.
-        criterion: Loss function. Must support reduction='none'.
-        gate (EWEGate): EWE gate instance. Creates default if None.
-        device (str): Device to train on. Auto-detects if None.
+        model:       PyTorch model to train.
+        optimizer:   PyTorch optimizer.
+        num_classes: Number of output classes.
+        k:           Gate threshold. None = adaptive. Default None.
+        use_gce:     Use GCE loss instead of CE. Default False.
+        warmup:      Epochs of standard training before gate. Default 10.
+        gce_q:       GCE interpolation parameter. Default 0.7.
+        device:      Device to train on. Default 'cuda' if available.
 
     Example:
-        >>> model = ResNet18()
-        >>> optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        >>> criterion = nn.CrossEntropyLoss(reduction='none')
-        >>> trainer = EWETrainer(model, optimizer, criterion)
-        >>> for epoch in range(50):
-        ...     loss, acc, rate = trainer.train_epoch(dataloader)
-        ...     print(f"Epoch {epoch} | Loss: {loss:.3f} | Accept: {rate:.1%}")
+        >>> trainer = EWETrainer(model, optimizer, num_classes=10)
+        >>> for epoch in range(100):
+        ...     for x, y in dataloader:
+        ...         trainer.step(x, y, epoch)
+        >>> print(f"Final acceptance rate: {trainer.gate.acceptance_rate:.1%}")
     """
 
     def __init__(
         self,
         model: nn.Module,
-        optimizer,
-        criterion: nn.Module,
-        gate: Optional[EWEGate] = None,
+        optimizer: torch.optim.Optimizer,
+        num_classes: int = 10,
+        k: Optional[float] = None,
+        use_gce: bool = False,
+        warmup: int = 10,
+        gce_q: float = 0.7,
         device: Optional[str] = None,
     ):
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self.model = model.to(device)
+        self.model = model
         self.optimizer = optimizer
-        self.criterion = criterion
-        self.gate = gate if gate is not None else EWEGate()
-        self.device = device
+        self.num_classes = num_classes
+        self.use_gce = use_gce
+        self.warmup = warmup
+        self.gce_q = gce_q
 
-    def train_epoch(
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+
+        self.gate = EWEGate(num_classes=num_classes, k=k)
+        self._current_epoch = 0
+
+    # ------------------------------------------------------------------
+    def step(
         self,
-        dataloader: DataLoader,
-    ):
+        x: torch.Tensor,
+        y: torch.Tensor,
+        epoch: int,
+    ) -> Optional[float]:
         """
-        Train for one epoch with EWE gating.
+        Run one training step on a mini-batch.
 
         Args:
-            dataloader: DataLoader. Items should be (images, labels)
-                        or (images, labels, indices).
+            x:     Input batch, shape (N, ...).
+            y:     Target labels, shape (N,).
+            epoch: Current epoch number (1-indexed).
 
         Returns:
-            Tuple of (mean_loss, accuracy, acceptance_rate).
+            Loss value as float, or None if all samples rejected.
         """
-        self.model.train()
-        total_loss = correct = total = 0
+        x = x.to(self.device)
+        y = y.to(self.device)
 
-        for batch in dataloader:
-            # Support dataloaders that return 2 or 3 items
-            if len(batch) == 3:
-                x, y, _ = batch
-            else:
-                x, y = batch
+        self.optimizer.zero_grad()
+        outputs = self.model(x)
 
-            x, y = x.to(self.device), y.to(self.device)
+        in_warmup = epoch <= self.warmup
 
-            self.optimizer.zero_grad()
-            outputs = self.model(x)
+        if in_warmup:
+            loss = F.cross_entropy(outputs, y)
+            loss.backward()
+            self.optimizer.step()
+            return loss.item()
 
-            # Compute per-sample losses
-            try:
-                losses = self.criterion(outputs, y)
-            except Exception:
-                # Fallback if criterion doesn't support reduction='none'
-                base = nn.CrossEntropyLoss(reduction='none')
-                losses = base(outputs, y)
+        if self.use_gce:
+            losses = gce_loss(outputs, y, q=self.gce_q, reduction="none")
+        else:
+            losses = F.cross_entropy(outputs, y, reduction="none")
 
-            # EWE gate decision
-            filtered_loss = self.gate.filter_losses(
-                losses, outputs.detach()
-            )
+        mask = self.gate(losses.detach(), outputs.detach())
 
-            if filtered_loss is not None:
-                filtered_loss.backward()
-                self.optimizer.step()
+        if mask.sum() == 0:
+            return None
 
-            total_loss += losses.mean().item()
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(y).sum().item()
-            total += y.size(0)
+        loss = losses[mask].mean()
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
 
-        mean_loss = total_loss / len(dataloader)
-        accuracy = 100.0 * correct / total
-        accept_rate = self.gate.acceptance_rate
-
-        return mean_loss, accuracy, accept_rate
-
-    def evaluate(self, dataloader: DataLoader) -> float:
-        """
-        Evaluate model accuracy on a dataloader.
-
-        Args:
-            dataloader: DataLoader with (images, labels) pairs.
-
-        Returns:
-            Accuracy as percentage.
-        """
-        self.model.eval()
-        correct = total = 0
-
-        with torch.no_grad():
-            for batch in dataloader:
-                x = batch[0].to(self.device)
-                y = batch[1].to(self.device)
-                _, predicted = self.model(x).max(1)
-                correct += predicted.eq(y).sum().item()
-                total += y.size(0)
-
-        return 100.0 * correct / total
+    # ------------------------------------------------------------------
+    @property
+    def acceptance_rate(self) -> float:
+        """Current gate acceptance rate."""
+        return self.gate.acceptance_rate
 
     def __repr__(self) -> str:
         return (
-            f"EWETrainer(\n"
-            f"  model={self.model.__class__.__name__},\n"
-            f"  device={self.device},\n"
-            f"  gate={self.gate}\n"
-            f")"
+            f"EWETrainer(num_classes={self.num_classes}, "
+            f"use_gce={self.use_gce}, warmup={self.warmup}, "
+            f"gate={self.gate})"
         )
