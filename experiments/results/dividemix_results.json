@@ -1,0 +1,52 @@
+{
+  "experiment": "DivideMix Baseline",
+  "timestamp": "2026-05-05T21:32:36.212409",
+  "seeds": [
+    42,
+    123,
+    456,
+    789,
+    1024
+  ],
+  "epochs": 100,
+  "results": {
+    "cifar10n": {
+      "per_seed": [
+        92.45,
+        92.55,
+        92.42,
+        92.48,
+        92.2
+      ],
+      "mean": 92.42,
+      "std": 0.1181524439019343
+    },
+    "cifar100n": {
+      "per_seed": [
+        62.79,
+        62.97,
+        62.71,
+        63.74,
+        62.84
+      ],
+      "mean": 63.010000000000005,
+      "std": 0.3746465000503813
+    }
+  },
+  "previous": {
+    "cifar10n": {
+      "standard": 72.37,
+      "gce": 81.74,
+      "co-teaching": 85.46,
+      "adaptive-ewe": 90.26,
+      "adaptive-ewegce": 91.95
+    },
+    "cifar100n": {
+      "standard": 54.66,
+      "gce": 58.4,
+      "co-teaching": 64.16,
+      "adaptive-ewe": 54.24,
+      "adaptive-ewegce": 58.9
+    }
+  }
+}
