@@ -1,20 +1,20 @@
 # Epistemic Weight Engine (EWE)
 
-> A modular pre-update gating mechanism for signal-reliability-weighted learning in AI systems.
-
-[![PyPI](https://img.shields.io/pypi/v/ewe-gate)](https://pypi.org/project/ewe-gate/)
+[![PyPI version](https://badge.fury.io/py/ewe-gate.svg)](https://badge.fury.io/py/ewe-gate)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Paper](https://img.shields.io/badge/Paper-ACM%20TIST-blue)](https://doi.org/10.5281/zenodo.18940011)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://pypi.org/project/ewe-gate/)
+[![Paper](https://img.shields.io/badge/paper-Zenodo-green.svg)](https://doi.org/10.5281/zenodo.18940011)
 
-**Author:** Maheep Purohit — Independent Researcher, Bikaner, Rajasthan, India  
-**Paper:** Submitted to ACM Transactions on Intelligent Systems and Technology (TIST-2026-03-0289)  
-**Preprint DOI:** [10.5281/zenodo.18940011](https://doi.org/10.5281/zenodo.18940011)  
-**Contact:** purohitmaheep@gmail.com
+**Pre-update gating mechanism for noise-robust neural network training.**
+
+EWE intercepts the gradient-to-parameter pathway and applies a binary accept/reject decision before any weight modification occurs — addressing both the **Uniform Weighting Problem** (all samples treated equally regardless of label reliability) and the **Approval Bias Problem** (models trained on human feedback optimise for rater approval rather than accuracy).
+
+> **Submitted to IEEE Transactions on Neural Networks and Learning Systems (TNNLS), May 2026.**  
+> Preprint: [doi.org/10.5281/zenodo.18940011](https://doi.org/10.5281/zenodo.18940011)
 
 ---
 
-## Install
+## Installation
 
 ```bash
 pip install ewe-gate
@@ -22,240 +22,218 @@ pip install ewe-gate
 
 ---
 
-## What is EWE?
-
-Current AI systems treat every training sample equally — regardless of whether the information is reliable, novel, or approval-biased. This creates two structural problems:
-
-1. **Uniform Weighting Problem** — gradient-based learning applies equal parameter-update eligibility to all samples regardless of signal reliability.
-2. **Approval Bias Problem** — systems trained with human feedback learn to please raters rather than learn what is accurate.
-
-The **Epistemic Weight Engine** is a modular pre-update gate that sits between incoming training data and the parameter update step. Before any sample is allowed to change the model's knowledge, EWE asks three questions:
-
-| Layer | Module | Question |
-|---|---|---|
-| Layer 1 | Impact Assessment I(x) | Does this sample actually matter? |
-| Layer 2 | Reality Alignment R(x) | Is this label evidence-consistent or just approval-consistent? |
-| Layer 3 | Paradigm Shift P(x) | Is this genuinely new information? |
-
-Only samples that pass all three layers trigger a parameter update. Everything else is routed to passive memory.
-
----
-
 ## Quick Start
-
-### Simplest usage — just the gate
 
 ```python
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from ewe import EWEGate
 
-model = YourModel()
-optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-criterion = nn.CrossEntropyLoss(reduction='none')
-gate = EWEGate()
+# Adaptive threshold — no manual tuning needed
+gate = EWEGate(num_classes=10)
 
-for epoch in range(50):
-    for x, y in dataloader:
-        optimizer.zero_grad()
-        outputs = model(x)
-        losses = criterion(outputs, y)
+# In your training loop
+for x, y in dataloader:
+    optimizer.zero_grad()
+    outputs = model(x)
+    losses  = F.cross_entropy(outputs, y, reduction='none')
 
-        # EWE filters which samples update parameters
-        filtered_loss = gate.filter_losses(losses, outputs.detach())
-        if filtered_loss is not None:
-            filtered_loss.backward()
-            optimizer.step()
+    # Gate decides which samples are allowed to update weights
+    mask = gate(losses.detach(), outputs.detach())
 
-    print(f"Epoch {epoch} | Accept rate: {gate.acceptance_rate:.1%}")
+    if mask.sum() > 0:
+        losses[mask].mean().backward()
+        optimizer.step()
+
+print(f"Acceptance rate: {gate.acceptance_rate:.1%}")
 ```
 
-### High-level trainer
+---
+
+## How It Works
+
+EWE evaluates each training sample through three modules:
+
+| Module | Formula | Purpose |
+|--------|---------|---------|
+| Impact Assessment I(x) | L(x) / (τ + L(x)) | Gradient significance |
+| Reality Alignment R(x) | max(0, sim(x) − λ·A(x)) | Label-evidence consistency |
+| Paradigm Shift P(x) | max(0, (L(x) − L_EMA) / (L_EMA + ε)) | Informational novelty |
+
+**Composite score:** W(x) = 0.45·I(x) + 0.40·R(x) + 0.15·P(x)
+
+**Gate decision:** G(x) = 1 if W(x) ≥ μ_W − k·σ_W
+
+**Adaptive threshold:** k* = 0.25 / log(C + 1) where C = number of classes
+
+---
+
+## Results
+
+### CIFAR-10N (ResNet-18, 5 seeds, 40.2% real human annotation noise)
+
+| Method | Accuracy | Std | vs. Standard | Networks |
+|--------|----------|-----|-------------|---------|
+| Standard CE | 72.37% | ±0.16% | — | 1 |
+| GCE | 81.74% | ±0.20% | +9.37% | 1 |
+| Co-teaching | 85.46% | ±0.06% | +13.09% | 2 |
+| DivideMix | 92.42% | ±0.12% | +20.05% | 2 |
+| **Adaptive EWE+GCE** | **91.95%** | **±0.06%** | **+19.58%** | **1** |
+
+Adaptive EWE+GCE achieves within **0.47%** of DivideMix using **one network** at **half the computational cost**.
+
+### CIFAR-100N (ResNet-34, 5 seeds, 40.2% real human annotation noise)
+
+| Method | Accuracy | Std | vs. Standard |
+|--------|----------|-----|-------------|
+| Standard CE | 54.66% | ±0.70% | — |
+| GCE | 58.40% | ±0.42% | +3.74% |
+| Co-teaching | 64.16% | ±0.60% | +9.50% |
+| DivideMix | 63.01% | ±0.37% | +8.35% |
+| **Adaptive EWE+GCE** | **58.90%** | **±0.37%** | **+4.24%** |
+
+### Synthetic Noise Levels (CIFAR-10, ResNet-18, 3 seeds)
+
+| Method | 20% | 40% | 60% | 80% |
+|--------|-----|-----|-----|-----|
+| Standard CE | 81.74% | 63.15% | 41.81% | 43.57% |
+| GCE | 92.21% | 87.85% | 75.33% | 42.73% |
+| **Adaptive EWE** | 84.20% | **88.38%** | **83.26%** | 25.23% |
+
+EWE achieves best single-network results at **40% and 60% noise** — the range typical of real-world annotation.
+
+### Approval Bias (DistilBERT, IMDb, 3 seeds)
+
+| Condition | Accuracy |
+|-----------|---------|
+| Clean labels | 84.97% |
+| 30% approval bias | 80.43% |
+| **Bias damage** | **−4.53%** |
+
+---
+
+## Advanced Usage
+
+### EWE combined with GCE loss
 
 ```python
-from ewe import EWETrainer
-import torch.nn as nn
+from ewe import EWEGate
+from ewe.losses import gce_loss
 
-trainer = EWETrainer(
-    model=model,
-    optimizer=optimizer,
-    criterion=nn.CrossEntropyLoss(reduction='none'),
-)
-
-for epoch in range(50):
-    loss, acc, rate = trainer.train_epoch(train_loader)
-    val_acc = trainer.evaluate(val_loader)
-    print(f"Epoch {epoch} | Acc: {acc:.1f}% | Accept: {rate:.1%}")
-```
-
-### Best results — EWE + GCE combined
-
-```python
-from ewe import EWEGate, GCELoss
-
-gate = EWEGate()
-criterion = GCELoss(q=0.7)
+gate = EWEGate(num_classes=10)
 
 for x, y in dataloader:
     optimizer.zero_grad()
     outputs = model(x)
-    losses = criterion(outputs, y, reduction='none')
-    filtered_loss = gate.filter_losses(losses, outputs.detach())
-    if filtered_loss is not None:
-        filtered_loss.backward()
+    losses  = gce_loss(outputs, y, q=0.7, reduction='none')
+    mask    = gate(losses.detach(), outputs.detach())
+    if mask.sum() > 0:
+        losses[mask].mean().backward()
         optimizer.step()
 ```
 
----
-
-## Key Results
-
-### CIFAR-10N — ResNet-18 — Real Human Annotation Noise ~40%
-
-| Method | Accuracy | vs Standard | Gate Level |
-|---|---|---|---|
-| Standard Training | 72.37% | baseline | None |
-| Label Smoothing | 72.72% | +0.35% | Loss |
-| GCE | 81.74% | +9.37% | Loss |
-| Co-teaching | 85.46% | +13.09% | Sample |
-| **EWE (ours)** | **79.36%** | **+6.99%** | **Pre-update** |
-| **EWE+GCE (ours)** | **84.33%** | **+11.96%** | **Pre-update + Loss** |
-
-**EWE+GCE outperforms GCE alone by +2.59% using a single model** — confirming the pre-update gate provides independent additive value at a distinct architectural level.
-
-### UCI Benchmark Datasets — Logistic Regression — N=20 seeds
-
-- EWE advantage scales monotonically with label noise severity
-- Reality Alignment module confirmed as most critical component
-- Robust to hyperparameter choice across full tested range
-
----
-
-## Configuration
+### Using EWETrainer (high-level wrapper)
 
 ```python
-gate = EWEGate(
-    alpha=0.45,      # Weight for Impact module I(x)
-    beta=0.40,       # Weight for Reality Alignment R(x) — most important
-    gamma=0.15,      # Weight for Paradigm Shift P(x)
-    k=0.25,          # Gate sensitivity — higher = stricter
-    lam=0.5,         # Approval penalty strength
-    ema_decay=0.99,  # Loss baseline decay rate
+from ewe import EWETrainer
+
+trainer = EWETrainer(
+    model=model,
+    optimizer=optimizer,
+    num_classes=10,
+    use_gce=True,     # EWE+GCE
+    warmup=10,        # 10 epoch warmup
 )
 
-# Monitor the gate
-print(f"Acceptance rate: {gate.acceptance_rate:.1%}")
-print(f"Suppression rate: {gate.suppression_rate:.1%}")
+for epoch in range(1, 101):
+    for x, y in dataloader:
+        trainer.step(x, y, epoch)
 
-# Reset stats between experiments
-gate.reset_stats()
+print(trainer)
 ```
 
-**Tuning k:**
-- `k=0.10` → ~70% acceptance (loose)
-- `k=0.25` → ~60% acceptance (default)
-- `k=0.50` → ~50% acceptance (strict)
+### Manual threshold (override adaptive)
 
----
+```python
+# Manual k — use when you want explicit control
+gate = EWEGate(num_classes=10, k=0.25)
 
-## The Core Equations
-
+# Adaptive k — recommended for most cases
+gate = EWEGate(num_classes=10)         # k = 0.25/log(11) = 0.104
+gate = EWEGate(num_classes=100)        # k = 0.25/log(101) = 0.054
 ```
-I(x) = L(x) / (τ + L(x))                           # Impact Assessment
 
-R(x) = max(0, sim(x) − λ·A(x))                     # Reality Alignment
-       sim(x) = 1 − L(x)/max(L)                     # Inverse loss formulation
-       A(x)   = max softmax probability              # Approval signal
+### Check adaptive k for your dataset
 
-P(x) = max(0, (L(x) − L_ema) / (L_ema + ε))        # Paradigm Shift
+```python
+from ewe import adaptive_k
 
-W(x) = α·I(x) + β·R(x) + γ·P(x)                   # Composite score
-       α=0.45, β=0.40, γ=0.15
-
-Gate: W(x) ≥ μ_W − k·σ_W                           # Adaptive threshold
+print(adaptive_k(10))    # 0.1043 — CIFAR-10
+print(adaptive_k(100))   # 0.0543 — CIFAR-100
+print(adaptive_k(1000))  # 0.0362 — ImageNet
+print(adaptive_k(2))     # 0.2276 — Binary classification
 ```
 
 ---
 
-## Repository Structure
+## Experiment Code
 
-```
-epistemic-weight-engine/
-│
-├── README.md                     # This file
-├── setup.py                      # PyPI packaging
-├── pyproject.toml                # Build configuration
-├── requirements.txt              # Dependencies
-│
-├── ewe/                          # Installable library
-│   ├── __init__.py
-│   ├── gate.py                   # Core EWEGate class
-│   ├── losses.py                 # GCELoss, LabelSmoothingLoss
-│   └── trainer.py                # EWETrainer wrapper
-│
-├── train.py                      # CIFAR-10N main experiment
-├── ewe_gce_experiment.py         # EWE+GCE combined experiment
-│
-├── ewe_results.json              # Main experiment results
-├── ewe_combined_results.json     # EWE+GCE results
-└── ewe_cifar10n_results.png      # Results figure
+All experiments from the paper are available in the `experiments/` folder:
+
+| File | Description |
+|------|-------------|
+| `train.py` | CIFAR-10N manual EWE (3 seeds) |
+| `train_adaptive_ewe.py` | Adaptive EWE — CIFAR-10N + CIFAR-100N |
+| `train_cifar100n.py` | CIFAR-100N manual EWE (5 seeds) |
+| `train_dividemix.py` | DivideMix baseline |
+| `train_synthetic_noise.py` | Synthetic noise levels 20/40/60/80% |
+| `train_lm_approval_bias.py` | Language model approval bias |
+| `train_ablation.py` | Neural network ablation study |
+
+### Run CIFAR-10N experiment
+
+```bash
+# Download CIFAR-10N labels
+# https://github.com/UCSC-REAL/cifar-10-100n
+
+python experiments/train_adaptive_ewe.py
 ```
 
 ---
 
-## Run the Experiments
+## Theoretical Guarantee
 
-### Requirements
+**Proposition 1 (Gradient Corruption Bound):** Under label noise rate ε ∈ [0, 0.5), there exists δ > 0 such that:
 
-```bash
-pip install torch torchvision numpy matplotlib seaborn pandas
+```
+E[‖∇_EWE − ∇_clean‖] / E[‖∇_std − ∇_clean‖] ≤ 1 − δ
 ```
 
-### Download CIFAR-10N labels
-
-Download `CIFAR-10_human.pt` from the [CIFAR-10N repository](https://github.com/UCSC-REAL/cifar-10-100n) and place it in the same folder as `train.py`.
-
-### Run main experiment
-
-```bash
-python train.py
-```
-
-Trains 5 methods on CIFAR-10N across 3 seeds. Takes 3 to 4 hours on RTX 3050.
-
-### Run EWE+GCE experiment
-
-```bash
-python ewe_gce_experiment.py
-```
-
-Requires `ewe_results.json` from the main experiment.
+EWE strictly reduces expected gradient corruption for any noise rate below 50%. The reduction is greatest at 20–60% noise — the range most common in real-world annotation.
 
 ---
 
 ## Citation
 
-If you use EWE in your research please cite:
-
 ```bibtex
 @article{purohit2026ewe,
-  title={Epistemic Weight Engine (EWE): A Framework for Signal-Reliability-Weighted
-         Learning in Artificial Neural Systems, with Multi-Dataset Experimental Evaluation},
-  author={Purohit, Maheep},
-  journal={ACM Transactions on Intelligent Systems and Technology},
-  year={2026},
-  note={Manuscript ID: TIST-2026-03-0289},
-  doi={10.5281/zenodo.18940011}
+  title   = {Epistemic Weight Engine ({EWE}): Adaptive Pre-Update Gating
+             for Noise-Robust Learning Under Real-World Label Noise},
+  author  = {Purohit, Maheep},
+  journal = {arXiv preprint},
+  year    = {2026},
+  doi     = {10.5281/zenodo.18940011},
+  url     = {https://doi.org/10.5281/zenodo.18940011}
 }
 ```
 
+*Citation will be updated upon IEEE TNNLS publication.*
+
 ---
 
-## Links
+## License
 
-- **PyPI:** https://pypi.org/project/ewe-gate/
-- **Preprint:** https://doi.org/10.5281/zenodo.18940011
-- **Contact:** purohitmaheep@gmail.com
+MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
@@ -263,6 +241,5 @@ If you use EWE in your research please cite:
 
 **Maheep Purohit**  
 Independent Researcher, Bikaner, Rajasthan, India  
-Patent Applicant: Adaptive Intelligent Pipeline Integrity System (filed 2025, India Patent Office)
-
-*This research was conducted entirely independently without institutional affiliation, laboratory access, external funding, or academic supervision.*
+[purohitmaheep@gmail.com](mailto:purohitmaheep@gmail.com)  
+ORCID: [0009-0003-4739-6786](https://orcid.org/0009-0003-4739-6786)
